@@ -17,7 +17,9 @@ from src.config import load_config, save_config
 from src.ui.editor import EditorWidget
 from src.ui.viewer import ViewerWidget
 from src.ui.sidebar import SidebarWidget
-from src.markdown.renderer import MarkdownRenderer
+from src.ui.toolbar import TTSToolbar
+from src.markdown.renderer import MarkdownRenderer, extract_plain_text
+from src.tts import TTSEngine, TTSHighlighter
 
 
 class MainWindow(QMainWindow):
@@ -34,10 +36,13 @@ class MainWindow(QMainWindow):
         self.is_modified = False
         self._setup_window()
         self._setup_renderer()
+        self._setup_tts_engine()
         self._setup_central_widget()
+        self._setup_toolbar()
         self._setup_menu_bar()
         self._setup_status_bar()
         self._connect_signals()
+        self._connect_tts_signals()
 
     def _setup_window(self):
         """Configure window properties."""
@@ -52,6 +57,21 @@ class MainWindow(QMainWindow):
     def _setup_renderer(self):
         """Initialize the markdown renderer."""
         self.renderer = MarkdownRenderer(self.config.highlight)
+
+    def _setup_tts_engine(self):
+        """Initialize the TTS engine and highlighter."""
+        self.tts_engine = TTSEngine(
+            speech_key=self.config.azure.speech_key,
+            speech_region=self.config.azure.speech_region,
+            parent=self,
+        )
+        self.tts_engine.set_voice(self.config.azure.default_voice)
+        self.tts_engine.set_rate(self.config.playback.speed)
+        self.tts_engine.set_volume(self.config.playback.volume)
+
+        # Highlighter will be created when text is loaded
+        self.tts_highlighter: TTSHighlighter | None = None
+        self._tts_plain_text: str = ""
 
     def _setup_central_widget(self):
         """Set up splitter with sidebar and content stack."""
@@ -84,6 +104,25 @@ class MainWindow(QMainWindow):
         self.main_splitter.setSizes([sidebar_width, content_width])
 
         self.setCentralWidget(self.main_splitter)
+
+    def _setup_toolbar(self):
+        """Set up the TTS toolbar."""
+        self.tts_toolbar = TTSToolbar(self)
+        self.addToolBar(Qt.TopToolBarArea, self.tts_toolbar)
+
+        # Set initial values from config
+        self.tts_toolbar.set_speed(self.config.playback.speed)
+        self.tts_toolbar.set_volume(self.config.playback.volume)
+
+        # Set initial visibility from config
+        self.tts_toolbar.setVisible(self.config.ui.toolbar_visible)
+
+        # Connect toolbar signals
+        self.tts_toolbar.play_clicked.connect(self._tts_play)
+        self.tts_toolbar.pause_clicked.connect(self._tts_pause)
+        self.tts_toolbar.stop_clicked.connect(self._tts_stop)
+        self.tts_toolbar.speed_changed.connect(self._on_tts_speed_changed)
+        self.tts_toolbar.volume_changed.connect(self._on_tts_volume_changed)
 
     def _setup_menu_bar(self):
         """Create menu bar with all menus."""
@@ -166,14 +205,24 @@ class MainWindow(QMainWindow):
         # Text-to-Speech menu
         tts_menu = menubar.addMenu("&Text-to-Speech")
 
-        play_action = QAction("&Play", self)
-        tts_menu.addAction(play_action)
+        self.tts_play_action = QAction("&Play", self)
+        self.tts_play_action.triggered.connect(self._tts_play)
+        tts_menu.addAction(self.tts_play_action)
 
-        pause_action = QAction("P&ause", self)
-        tts_menu.addAction(pause_action)
+        self.tts_pause_action = QAction("P&ause", self)
+        self.tts_pause_action.triggered.connect(self._tts_pause)
+        tts_menu.addAction(self.tts_pause_action)
 
-        stop_action = QAction("&Stop", self)
-        tts_menu.addAction(stop_action)
+        self.tts_stop_action = QAction("&Stop", self)
+        self.tts_stop_action.triggered.connect(self._tts_stop)
+        tts_menu.addAction(self.tts_stop_action)
+
+        tts_menu.addSeparator()
+
+        self.jump_to_position_action = QAction("&Jump to Reading Position", self)
+        self.jump_to_position_action.setShortcut("Ctrl+P")
+        self.jump_to_position_action.triggered.connect(self.jump_to_reading_position)
+        tts_menu.addAction(self.jump_to_position_action)
 
         tts_menu.addSeparator()
 
@@ -201,12 +250,22 @@ class MainWindow(QMainWindow):
         self.save_action.triggered.connect(self.save_file)
         self.toggle_mode_action.triggered.connect(self.toggle_mode)
         self.toggle_sidebar_action.triggered.connect(self.toggle_sidebar)
+        self.toggle_toolbar_action.triggered.connect(self.toggle_toolbar)
 
         # Sidebar signals
         self.sidebar.file_selected.connect(self._on_sidebar_file_selected)
 
         # Editor modifications
         self.editor.text_modified.connect(self._on_text_modified)
+
+    def _connect_tts_signals(self):
+        """Connect TTS engine signals to handlers."""
+        self.tts_engine.playback_started.connect(self._on_tts_started)
+        self.tts_engine.playback_paused.connect(self._on_tts_paused)
+        self.tts_engine.playback_stopped.connect(self._on_tts_stopped)
+        self.tts_engine.playback_finished.connect(self._on_tts_finished)
+        self.tts_engine.word_boundary.connect(self._on_tts_word_boundary)
+        self.tts_engine.error_occurred.connect(self._on_tts_error)
 
     def _on_text_modified(self):
         """Handle editor text modifications."""
@@ -253,6 +312,146 @@ class MainWindow(QMainWindow):
         is_visible = self.sidebar.isVisible()
         self.sidebar.setVisible(not is_visible)
         self.toggle_sidebar_action.setChecked(not is_visible)
+
+    def toggle_toolbar(self):
+        """Toggle TTS toolbar visibility."""
+        is_visible = self.tts_toolbar.isVisible()
+        self.tts_toolbar.setVisible(not is_visible)
+        self.toggle_toolbar_action.setChecked(not is_visible)
+
+    # TTS Control Methods
+
+    def _tts_play(self):
+        """Start or resume TTS playback."""
+        if self.tts_engine.is_paused:
+            self.tts_engine.resume()
+            return
+
+        # Get the markdown text and convert to plain text for TTS
+        markdown_text = self.editor.get_text()
+        if not markdown_text.strip():
+            self.status_bar.showMessage("No text to read", 3000)
+            return
+
+        # Extract plain text for TTS
+        self._tts_plain_text = extract_plain_text(markdown_text)
+        if not self._tts_plain_text.strip():
+            self.status_bar.showMessage("No readable text found", 3000)
+            return
+
+        # Create highlighter for tracking
+        self.tts_highlighter = TTSHighlighter(self._tts_plain_text)
+
+        # Switch to view mode and render
+        if self.stack.currentIndex() == self.MODE_EDIT:
+            html = self.renderer.render(markdown_text)
+            self.viewer.set_html(html)
+            self.stack.setCurrentIndex(self.MODE_VIEW)
+            self._update_status_bar()
+
+        # Start playback
+        if not self.tts_engine.play(self._tts_plain_text):
+            self.status_bar.showMessage("Failed to start TTS playback", 3000)
+
+    def _tts_pause(self):
+        """Pause TTS playback."""
+        self.tts_engine.pause()
+
+    def _tts_stop(self):
+        """Stop TTS playback."""
+        self.tts_engine.stop()
+        # Clear highlights in viewer
+        self.viewer.clear_highlights()
+
+    def _on_tts_speed_changed(self, speed: float):
+        """Handle speed change from toolbar.
+
+        Args:
+            speed: New speed multiplier (0.5 to 2.0).
+        """
+        self.tts_engine.set_rate(speed)
+        self.config.playback.speed = speed
+
+    def _on_tts_volume_changed(self, volume: int):
+        """Handle volume change from toolbar.
+
+        Args:
+            volume: New volume level (0 to 100).
+        """
+        self.tts_engine.set_volume(volume)
+        self.config.playback.volume = volume
+
+    def _on_tts_started(self):
+        """Handle TTS playback started."""
+        self.tts_toolbar.set_playing(True)
+        self.status_bar.showMessage("TTS playing...")
+
+    def _on_tts_paused(self):
+        """Handle TTS playback paused."""
+        self.tts_toolbar.set_playing(False)
+        self.tts_toolbar.pause_action.setEnabled(False)
+        self.tts_toolbar.play_action.setEnabled(True)
+        self.tts_toolbar.stop_action.setEnabled(True)
+        self.status_bar.showMessage("TTS paused")
+
+    def _on_tts_stopped(self):
+        """Handle TTS playback stopped."""
+        self.tts_toolbar.set_playing(False)
+        self.status_bar.showMessage("TTS stopped", 3000)
+
+    def _on_tts_finished(self):
+        """Handle TTS playback finished."""
+        self.tts_toolbar.set_playing(False)
+        self.viewer.clear_highlights()
+        self.status_bar.showMessage("TTS finished", 3000)
+
+    def _on_tts_word_boundary(self, start_offset: int, length: int):
+        """Handle word boundary event from TTS engine.
+
+        Args:
+            start_offset: Character offset of the word start.
+            length: Length of the word.
+        """
+        if not self.tts_highlighter:
+            return
+
+        # Update highlighter position
+        self.tts_highlighter.update_position(start_offset)
+
+        # Get sentence index for this word
+        sentence_idx = self.tts_highlighter.get_sentence_for_offset(start_offset)
+
+        # Get word offset for highlighting
+        word_offset = self.tts_highlighter.get_word_offset(start_offset, start_offset + length)
+
+        # Update viewer highlights
+        if sentence_idx >= 0:
+            self.viewer.highlight_sentence(sentence_idx)
+            self.viewer.scroll_to_sentence(sentence_idx)
+
+        self.viewer.highlight_word(word_offset)
+
+    def _on_tts_error(self, error_msg: str):
+        """Handle TTS error.
+
+        Args:
+            error_msg: Error message from TTS engine.
+        """
+        self.tts_toolbar.set_playing(False)
+        self.status_bar.showMessage(f"TTS Error: {error_msg}", 5000)
+        QMessageBox.warning(self, "TTS Error", error_msg)
+
+    def jump_to_reading_position(self):
+        """Jump to the current TTS reading position in the viewer."""
+        if not self.tts_highlighter or not self.tts_engine.is_playing:
+            return
+
+        current_pos = self.tts_highlighter.current_position
+        sentence_idx = self.tts_highlighter.get_sentence_for_offset(current_pos)
+
+        if sentence_idx >= 0:
+            self.viewer.scroll_to_sentence(sentence_idx)
+            self.viewer.enable_auto_scroll()
 
     def open_folder_dialog(self):
         """Show open folder dialog and set sidebar root."""
@@ -389,6 +588,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Save config on close, with unsaved changes prompt."""
+        # Stop any TTS playback
+        if self.tts_engine.is_playing:
+            self.tts_engine.stop()
+
         if self.is_modified:
             reply = QMessageBox.question(
                 self,
@@ -414,6 +617,9 @@ class MainWindow(QMainWindow):
         self.config.ui.sidebar_visible = self.sidebar.isVisible()
         if self.sidebar.isVisible():
             self.config.ui.sidebar_width = self.main_splitter.sizes()[0]
+
+        # Save toolbar state
+        self.config.ui.toolbar_visible = self.tts_toolbar.isVisible()
 
         save_config(self.config)
         event.accept()
