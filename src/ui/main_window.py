@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QFileDialog,
     QMessageBox,
+    QSplitter,
 )
 from PySide6.QtGui import QAction, QKeySequence, QDragEnterEvent, QDropEvent
 from PySide6.QtCore import Qt
@@ -15,6 +16,7 @@ from PySide6.QtCore import Qt
 from src.config import load_config, save_config
 from src.ui.editor import EditorWidget
 from src.ui.viewer import ViewerWidget
+from src.ui.sidebar import SidebarWidget
 from src.markdown.renderer import MarkdownRenderer
 
 
@@ -52,7 +54,16 @@ class MainWindow(QMainWindow):
         self.renderer = MarkdownRenderer(self.config.highlight)
 
     def _setup_central_widget(self):
-        """Set up QStackedWidget with editor and viewer."""
+        """Set up splitter with sidebar and content stack."""
+        # Main splitter to hold sidebar and content
+        self.main_splitter = QSplitter(Qt.Horizontal)
+
+        # Create sidebar
+        self.sidebar = SidebarWidget()
+        self.sidebar.setVisible(self.config.ui.sidebar_visible)
+        self.main_splitter.addWidget(self.sidebar)
+
+        # Content stack (editor and viewer)
         self.stack = QStackedWidget()
 
         # Create editor widget (index 0)
@@ -65,7 +76,14 @@ class MainWindow(QMainWindow):
 
         # Start in edit mode
         self.stack.setCurrentIndex(self.MODE_EDIT)
-        self.setCentralWidget(self.stack)
+        self.main_splitter.addWidget(self.stack)
+
+        # Set initial splitter sizes
+        sidebar_width = self.config.ui.sidebar_width
+        content_width = self.config.ui.window_width - sidebar_width
+        self.main_splitter.setSizes([sidebar_width, content_width])
+
+        self.setCentralWidget(self.main_splitter)
 
     def _setup_menu_bar(self):
         """Create menu bar with all menus."""
@@ -78,8 +96,8 @@ class MainWindow(QMainWindow):
         self.open_file_action.setShortcut(QKeySequence.Open)
         file_menu.addAction(self.open_file_action)
 
-        open_folder_action = QAction("Open &Folder...", self)
-        file_menu.addAction(open_folder_action)
+        self.open_folder_action = QAction("Open &Folder...", self)
+        file_menu.addAction(self.open_folder_action)
 
         self.recent_menu = file_menu.addMenu("&Recent Files")
 
@@ -179,8 +197,13 @@ class MainWindow(QMainWindow):
         """Connect signals to handlers."""
         # Menu actions
         self.open_file_action.triggered.connect(self.open_file_dialog)
+        self.open_folder_action.triggered.connect(self.open_folder_dialog)
         self.save_action.triggered.connect(self.save_file)
         self.toggle_mode_action.triggered.connect(self.toggle_mode)
+        self.toggle_sidebar_action.triggered.connect(self.toggle_sidebar)
+
+        # Sidebar signals
+        self.sidebar.file_selected.connect(self._on_sidebar_file_selected)
 
         # Editor modifications
         self.editor.text_modified.connect(self._on_text_modified)
@@ -224,6 +247,35 @@ class MainWindow(QMainWindow):
             self.editor.setFocus()
 
         self._update_status_bar()
+
+    def toggle_sidebar(self):
+        """Toggle sidebar visibility."""
+        is_visible = self.sidebar.isVisible()
+        self.sidebar.setVisible(not is_visible)
+        self.toggle_sidebar_action.setChecked(not is_visible)
+
+    def open_folder_dialog(self):
+        """Show open folder dialog and set sidebar root."""
+        folder_path = QFileDialog.getExistingDirectory(
+            self,
+            "Open Folder",
+            str(self.config.recent.last_folder or Path.home()),
+        )
+
+        if folder_path:
+            self.config.recent.last_folder = folder_path
+            self.sidebar.set_folder(folder_path)
+            # Make sure sidebar is visible
+            if not self.sidebar.isVisible():
+                self.toggle_sidebar()
+
+    def _on_sidebar_file_selected(self, file_path: str):
+        """Handle file selection from sidebar.
+
+        Args:
+            file_path: Path to the selected file.
+        """
+        self.open_file(Path(file_path))
 
     def open_file(self, file_path: Path) -> bool:
         """Open a file and load its content.
@@ -357,5 +409,11 @@ class MainWindow(QMainWindow):
         # Save window size
         self.config.ui.window_width = self.width()
         self.config.ui.window_height = self.height()
+
+        # Save sidebar state
+        self.config.ui.sidebar_visible = self.sidebar.isVisible()
+        if self.sidebar.isVisible():
+            self.config.ui.sidebar_width = self.main_splitter.sizes()[0]
+
         save_config(self.config)
         event.accept()
