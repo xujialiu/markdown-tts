@@ -1,0 +1,5 @@
+PySide6>=6.5.0
+omegaconf>=2.3.0
+azure-cognitiveservices-speech>=1.30.0
+markdown>=3.5.0
+Pygments>=2.17.0
