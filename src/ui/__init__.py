@@ -1,5 +1,6 @@
 """UI components package."""
 from src.ui.main_window import MainWindow
 from src.ui.editor import EditorWidget
+from src.ui.viewer import ViewerWidget
 
-__all__ = ["MainWindow", "EditorWidget"]
+__all__ = ["MainWindow", "EditorWidget", "ViewerWidget"]
