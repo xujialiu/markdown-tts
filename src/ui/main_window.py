@@ -302,6 +302,11 @@ class MainWindow(QMainWindow):
             self.viewer.set_html(html)
             self.stack.setCurrentIndex(self.MODE_VIEW)
         else:
+            # Pause TTS when switching to edit mode if playing
+            if self.tts_engine.is_playing and not self.tts_engine.is_paused:
+                self.tts_engine.pause()
+                self.status_bar.showMessage("TTS paused (switched to edit mode)", 3000)
+
             # Switch back to edit mode
             self.stack.setCurrentIndex(self.MODE_EDIT)
             self.editor.setFocus()
@@ -328,10 +333,22 @@ class MainWindow(QMainWindow):
             self.tts_engine.resume()
             return
 
+        # Check if TTS is configured
+        if not self.tts_engine.is_configured():
+            QMessageBox.warning(
+                self,
+                "TTS Not Configured",
+                "Text-to-Speech is not configured.\n\n"
+                "Please set your Azure Speech Service credentials in config.yaml:\n"
+                "- speech_key: Your Azure Speech Service key\n"
+                "- speech_region: Your Azure region (e.g., eastus)",
+            )
+            return
+
         # Get the markdown text and convert to plain text for TTS
         markdown_text = self.editor.get_text()
         if not markdown_text.strip():
-            self.status_bar.showMessage("No text to read", 3000)
+            self.status_bar.showMessage("No content to read", 3000)
             return
 
         # Extract plain text for TTS
