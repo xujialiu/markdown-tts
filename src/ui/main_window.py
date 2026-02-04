@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QSplitter,
 )
-from PySide6.QtGui import QAction, QKeySequence, QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QDragEnterEvent, QDropEvent
 from PySide6.QtCore import Qt
 
 from src.config import load_config, save_config
@@ -40,6 +40,7 @@ class MainWindow(QMainWindow):
         self._setup_central_widget()
         self._setup_toolbar()
         self._setup_menu_bar()
+        self._populate_tts_menus()
         self._setup_status_bar()
         self._connect_signals()
         self._connect_tts_signals()
@@ -452,6 +453,133 @@ class MainWindow(QMainWindow):
         if sentence_idx >= 0:
             self.viewer.scroll_to_sentence(sentence_idx)
             self.viewer.enable_auto_scroll()
+
+    # TTS Menu Methods
+
+    def _populate_tts_menus(self):
+        """Populate all TTS-related menus."""
+        self._populate_voice_menu()
+        self._populate_speed_menu()
+        self._populate_volume_menu()
+
+    def _populate_voice_menu(self):
+        """Populate Voice submenu with available voices from TTS engine."""
+        self.voice_menu.clear()
+
+        # Create action group for exclusive selection
+        self._voice_action_group = QActionGroup(self)
+        self._voice_action_group.setExclusive(True)
+
+        # Get available voices from TTS engine
+        voices = self.tts_engine.get_available_voices()
+
+        if not voices:
+            # If no voices available (not configured), show default voice option
+            voices = [self.config.azure.default_voice]
+
+        current_voice = self.tts_engine.voice
+
+        for voice in voices:
+            action = QAction(voice, self)
+            action.setCheckable(True)
+            action.setChecked(voice == current_voice)
+            action.setData(voice)
+            # Use default for checked to handle signal overload
+            action.triggered.connect(lambda checked=False, v=voice: self._set_voice(v))
+            self._voice_action_group.addAction(action)
+            self.voice_menu.addAction(action)
+
+    def _populate_speed_menu(self):
+        """Populate Speed submenu with speed options."""
+        self.speed_menu.clear()
+
+        # Create action group for exclusive selection
+        self._speed_action_group = QActionGroup(self)
+        self._speed_action_group.setExclusive(True)
+
+        # Speed options
+        speed_options = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+        current_speed = self.config.playback.speed
+
+        for speed in speed_options:
+            label = f"{speed}x"
+            action = QAction(label, self)
+            action.setCheckable(True)
+            # Use approximate comparison for floats
+            action.setChecked(abs(speed - current_speed) < 0.01)
+            action.setData(speed)
+            # Use default for checked to handle signal overload
+            action.triggered.connect(lambda checked=False, s=speed: self._menu_set_speed(s))
+            self._speed_action_group.addAction(action)
+            self.speed_menu.addAction(action)
+
+    def _populate_volume_menu(self):
+        """Populate Volume submenu with volume options."""
+        self.volume_menu.clear()
+
+        # Create action group for exclusive selection
+        self._volume_action_group = QActionGroup(self)
+        self._volume_action_group.setExclusive(True)
+
+        # Volume options
+        volume_options = [0, 25, 50, 75, 100]
+        current_volume = self.config.playback.volume
+
+        for volume in volume_options:
+            label = f"{volume}%"
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setChecked(volume == current_volume)
+            action.setData(volume)
+            # Use default for checked to handle signal overload
+            action.triggered.connect(lambda checked=False, v=volume: self._menu_set_volume(v))
+            self._volume_action_group.addAction(action)
+            self.volume_menu.addAction(action)
+
+    def _set_voice(self, voice: str):
+        """Set voice, update checkmarks, and update config.
+
+        Args:
+            voice: Voice name to set.
+        """
+        self.tts_engine.set_voice(voice)
+        self.config.azure.default_voice = voice
+
+        # Update checkmarks in voice menu
+        for action in self._voice_action_group.actions():
+            action.setChecked(action.data() == voice)
+
+    def _menu_set_speed(self, speed: float):
+        """Set speed from menu, sync with toolbar.
+
+        Args:
+            speed: Speed multiplier to set.
+        """
+        self.tts_engine.set_rate(speed)
+        self.config.playback.speed = speed
+
+        # Sync toolbar
+        self.tts_toolbar.set_speed(speed)
+
+        # Update checkmarks in speed menu
+        for action in self._speed_action_group.actions():
+            action.setChecked(abs(action.data() - speed) < 0.01)
+
+    def _menu_set_volume(self, volume: int):
+        """Set volume from menu, sync with toolbar.
+
+        Args:
+            volume: Volume level to set (0-100).
+        """
+        self.tts_engine.set_volume(volume)
+        self.config.playback.volume = volume
+
+        # Sync toolbar
+        self.tts_toolbar.set_volume(volume)
+
+        # Update checkmarks in volume menu
+        for action in self._volume_action_group.actions():
+            action.setChecked(action.data() == volume)
 
     def open_folder_dialog(self):
         """Show open folder dialog and set sidebar root."""
