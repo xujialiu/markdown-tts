@@ -1,0 +1,23 @@
+/* Markdown CSS placeholder - actual styles are generated dynamically by renderer.py */
+
+/* This file can be extended with additional custom styles if needed */
+
+.markdown-body {
+    padding: 20px;
+}
+
+.tts-sentence {
+    transition: background-color 0.2s ease;
+}
+
+.tts-word {
+    transition: background-color 0.15s ease;
+}
+
+.current-sentence {
+    background-color: #fff3cd;
+}
+
+.current-word {
+    background-color: #ffc107;
+}
