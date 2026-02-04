@@ -1,14 +1,13 @@
 """Typora TTS App - Markdown editor with text-to-speech."""
 import sys
-from PySide6.QtWidgets import QApplication, QMainWindow, QLabel
+from PySide6.QtWidgets import QApplication
+
+from src.ui import MainWindow
 
 
 def main():
     app = QApplication(sys.argv)
-    window = QMainWindow()
-    window.setWindowTitle("Typora TTS")
-    window.setCentralWidget(QLabel("Hello, Typora TTS!"))
-    window.resize(800, 600)
+    window = MainWindow()
     window.show()
     sys.exit(app.exec())
 
